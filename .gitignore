@@ -218,3 +218,4 @@ __marimo__/
 *.avi
 *.mkv
 *.wmv
+/app_config.json
