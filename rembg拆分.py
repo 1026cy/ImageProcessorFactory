@@ -102,12 +102,21 @@ class ImageProcessor:
         return mask
 
     @staticmethod
-    def get_mask_rembg(img):
+    def get_mask_rembg(img, alpha_matting=False, am_fg_thresh=240, am_bg_thresh=10, am_erode=10):
         try:
             # cv2 image is BGR, rembg needs RGB
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(img_rgb)
-            output = remove(pil_img)
+            
+            # Pass parameters to remove
+            output = remove(
+                pil_img,
+                alpha_matting=alpha_matting,
+                alpha_matting_foreground_threshold=am_fg_thresh,
+                alpha_matting_background_threshold=am_bg_thresh,
+                alpha_matting_erode_size=am_erode
+            )
+            
             output_np = np.array(output)
             if output_np.shape[2] == 4:
                 return output_np[:, :, 3]
@@ -267,7 +276,6 @@ class ImageCutterApp:
             messagebox.showinfo("提示", f"保存路径已更新为：\n{self.output_path}")
 
     def setup_ui(self):
-        # ... (UI setup remains largely the same, but commands for widgets will change)
         # 顶部菜单栏
         top_bar = ttk.Frame(self.root, padding="5")
         top_bar.pack(fill=tk.X)
@@ -330,7 +338,13 @@ class ImageCutterApp:
         self.add_slider(self.yellow_frame, "yellow_v_min", "最小亮度", 0, 255, 40)
 
         self.rembg_frame = ttk.LabelFrame(self.param_container, text="Rembg AI 模式", padding="5")
-        ttk.Label(self.rembg_frame, text="使用 AI 自动去除背景\n(已优化，UI不会卡顿)").pack(pady=10)
+        self.rembg_alpha_matting_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.rembg_frame, text="启用 Alpha Matting (边缘优化)", 
+                        variable=self.rembg_alpha_matting_var, 
+                        command=self.schedule_update).pack(anchor=tk.W, pady=5)
+        self.add_slider(self.rembg_frame, "rembg_fg_thresh", "前景阈值", 0, 255, 240)
+        self.add_slider(self.rembg_frame, "rembg_bg_thresh", "背景阈值", 0, 255, 10)
+        self.add_slider(self.rembg_frame, "rembg_erode", "腐蚀大小", 0, 40, 10)
 
         self.morph_frame = ttk.LabelFrame(self.main_controls_frame, text="形态学处理 (连接主体)", padding="5")
         self.morph_frame.pack(fill=tk.X, pady=10)
@@ -421,7 +435,13 @@ class ImageCutterApp:
         elif mode == "yellow":
             mask = ImageProcessor.get_mask_yellow(image, params["yellow_h_center"], params["yellow_h_tol"], params["yellow_s_min"], params["yellow_v_min"])
         elif mode == "rembg":
-            mask = ImageProcessor.get_mask_rembg(image)
+            mask = ImageProcessor.get_mask_rembg(
+                image,
+                alpha_matting=params.get("rembg_alpha_matting", False),
+                am_fg_thresh=params.get("rembg_fg_thresh", 240),
+                am_bg_thresh=params.get("rembg_bg_thresh", 10),
+                am_erode=params.get("rembg_erode", 10)
+            )
         else:
             mask = ImageProcessor.get_mask_gray(image, params["gray_thresh"], params["bg_type"])
         
@@ -446,6 +466,7 @@ class ImageCutterApp:
         if self.current_image is None: return
         
         params = {'mode': self.mode_var.get(), 'bg_type': self.bg_type_var.get()}
+        params['rembg_alpha_matting'] = self.rembg_alpha_matting_var.get()
         for name, var in self.sliders.items():
             params[name] = var.get()
 
