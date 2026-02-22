@@ -3,14 +3,30 @@
 # @Author  : cy1026
 # @File    : rembg拆分.py
 # @Software: PyCharm
+import os
+import sys
+
+# ==========================================
+# 环境配置 (Environment Setup)
+# ==========================================
+if getattr(sys, 'frozen', False):
+    base_path = os.path.dirname(sys.executable)
+else:
+    base_path = os.path.dirname(os.path.abspath(__file__))
+
+models_dir = os.path.join(base_path, "models")
+if not os.path.exists(models_dir):
+    os.makedirs(models_dir)
+
+os.environ["U2NET_HOME"] = models_dir
+
 import cv2
 import numpy as np
-import os
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
-from rembg import remove
+from rembg import remove, new_session
 import threading
 import queue
 
@@ -22,11 +38,22 @@ class ImageProcessor:
     """
     负责图像处理的核心算法，与UI解耦。
     """
+    _sessions = {}
+
+    @classmethod
+    def get_session(cls, model_name):
+        if model_name not in cls._sessions:
+            print(f"正在加载模型: {model_name} ...")
+            try:
+                cls._sessions[model_name] = new_session(model_name)
+            except Exception as e:
+                print(f"模型加载失败: {e}")
+                return None
+        return cls._sessions[model_name]
 
     @staticmethod
     def cv_imread(file_path):
         try:
-            # 支持中文路径读取
             return cv2.imdecode(np.fromfile(file_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
         except Exception as e:
             print(f"Error reading file {file_path}: {e}")
@@ -35,7 +62,6 @@ class ImageProcessor:
     @staticmethod
     def cv_imwrite(file_path, img):
         try:
-            # 支持中文路径保存
             is_success, im_buf = cv2.imencode(".png", img)
             if is_success:
                 im_buf.tofile(file_path)
@@ -45,30 +71,30 @@ class ImageProcessor:
         return False
 
     @staticmethod
-    def get_mask_color(img, hue_tol, sat_min, val_min):
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        h, w, _ = img.shape
-        # 取四个角作为背景色参考
-        corners_hsv = [hsv[0, 0], hsv[0, w - 1], hsv[h - 1, 0], hsv[h - 1, w - 1]]
-        bg_hsv = np.median(corners_hsv, axis=0)
-        bg_h = bg_hsv[0]
-
-        min_h, max_h = bg_h - hue_tol, bg_h + hue_tol
-
-        # 处理色相环绕 (0-180)
-        if min_h < 0:
-            lower1, upper1 = np.array([min_h + 180, sat_min, val_min]), np.array([179, 255, 255])
-            lower2, upper2 = np.array([0, sat_min, val_min]), np.array([max_h, 255, 255])
-            mask = cv2.bitwise_or(cv2.inRange(hsv, lower1, upper1), cv2.inRange(hsv, lower2, upper2))
-        elif max_h > 179:
-            lower1, upper1 = np.array([min_h, sat_min, val_min]), np.array([179, 255, 255])
-            lower2, upper2 = np.array([0, sat_min, val_min]), np.array([max_h - 180, 255, 255])
-            mask = cv2.bitwise_or(cv2.inRange(hsv, lower1, upper1), cv2.inRange(hsv, lower2, upper2))
+    def get_mask_rgba_range(raw_image, r_min, r_max, g_min, g_max, b_min, b_max, a_min, a_max, invert=True):
+        # 确保图像是4通道BGRA
+        if len(raw_image.shape) == 2:
+            image_bgra = cv2.cvtColor(raw_image, cv2.COLOR_GRAY2BGRA)
+        elif raw_image.shape[2] == 3:
+            image_bgra = cv2.cvtColor(raw_image, cv2.COLOR_BGR2BGRA)
         else:
-            lower, upper = np.array([min_h, sat_min, val_min]), np.array([max_h, 255, 255])
-            mask = cv2.inRange(hsv, lower, upper)
+            image_bgra = raw_image
 
-        return cv2.bitwise_not(mask)  # 反转，保留前景
+        # OpenCV 使用 BGR 顺序
+        lower_bound = np.array([b_min, g_min, r_min, a_min], dtype=np.uint8)
+        upper_bound = np.array([b_max, g_max, r_max, a_max], dtype=np.uint8)
+        
+        # 创建一个蒙版，其中在范围内的像素为白色（255）
+        mask = cv2.inRange(image_bgra, lower_bound, upper_bound)
+        
+        # 统计匹配像素比例 (用于调试)
+        match_ratio = np.count_nonzero(mask) / (mask.shape[0] * mask.shape[1])
+        
+        # 如果 invert=True (默认)，则反转蒙版
+        if invert:
+            return cv2.bitwise_not(mask), match_ratio
+        else:
+            return mask, match_ratio
 
     @staticmethod
     def get_mask_yellow(img, h_center, h_tol, s_min, v_min):
@@ -102,15 +128,18 @@ class ImageProcessor:
         return mask
 
     @staticmethod
-    def get_mask_rembg(img, alpha_matting=False, am_fg_thresh=240, am_bg_thresh=10, am_erode=10):
+    def get_mask_rembg(img, model_name="u2net", alpha_matting=False, am_fg_thresh=240, am_bg_thresh=10, am_erode=10):
         try:
-            # cv2 image is BGR, rembg needs RGB
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(img_rgb)
             
-            # Pass parameters to remove
+            session = ImageProcessor.get_session(model_name)
+            if session is None:
+                return np.zeros(img.shape[:2], dtype=np.uint8)
+
             output = remove(
                 pil_img,
+                session=session,
                 alpha_matting=alpha_matting,
                 alpha_matting_foreground_threshold=am_fg_thresh,
                 alpha_matting_background_threshold=am_bg_thresh,
@@ -124,6 +153,14 @@ class ImageProcessor:
         except Exception as e:
             print(f"Rembg error: {e}")
             return np.zeros(img.shape[:2], dtype=np.uint8)
+
+    @staticmethod
+    def shift_mask(mask, dx, dy):
+        if dx == 0 and dy == 0:
+            return mask
+        h, w = mask.shape
+        M = np.float32([[1, 0, dx], [0, 1, dy]])
+        return cv2.warpAffine(mask, M, (w, h))
 
     @staticmethod
     def apply_morphology(mask, clean_k, connect_k, iters):
@@ -145,10 +182,8 @@ class ImageCutterApp:
         self.root.title("AI图片处理工厂 - 交互式切分工具")
         self.root.geometry("1400x900")
 
-        # 配置文件路径
         self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_config.json")
 
-        # 初始化变量
         self.input_path = ""
         self.output_path = ""
         self.files = []
@@ -159,16 +194,14 @@ class ImageCutterApp:
         self.processed_mask = None
         self.display_image = None
 
-        # 标志位
         self.is_auto_detecting = False
         self.is_processing = False
         self.debounce_job = None
+        self.is_picking_color = False
 
-        # 手动修补层 (Manual Mask Layers)
         self.manual_draw_layer = None
         self.manual_erase_layer = None
 
-        # 编辑状态
         self.is_editing_mask = False
         self.drawing = False
         self.brush_size = 20
@@ -176,25 +209,20 @@ class ImageCutterApp:
         self.last_mouse_pos = None
         self.brush_cursor_id = None
 
-        # 缩放和平移状态
         self.zoom_scale = 1.0
         self.pan_offset_x = 0
         self.pan_offset_y = 0
 
-        # 异步处理队列
         self.processing_request_queue = queue.Queue(maxsize=1)
         self.processing_result_queue = queue.Queue()
 
-        # 构建界面
         self.setup_ui()
 
-        # 启动后台工作线程和UI队列检查
         threading.Thread(target=self._processing_worker, daemon=True).start()
         self.root.after(100, self._check_result_queue)
         self.root.after(150, self.init_directories)
 
     def init_directories(self):
-        """初始化目录：优先加载配置，否则询问用户"""
         if self.load_settings():
             self.refresh_file_list()
             print(f"已自动加载配置：输入={self.input_path}, 输出={self.output_path}")
@@ -202,7 +230,6 @@ class ImageCutterApp:
             self.ask_directories()
 
     def load_settings(self):
-        """读取配置文件"""
         if not os.path.exists(self.config_file):
             return False
         try:
@@ -219,7 +246,6 @@ class ImageCutterApp:
         return False
 
     def save_settings(self):
-        """保存配置文件"""
         config = {"input_path": self.input_path, "output_path": self.output_path}
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -229,7 +255,6 @@ class ImageCutterApp:
             print(f"保存配置文件失败: {e}")
 
     def ask_directories(self):
-        """引导用户选择输入和输出目录"""
         messagebox.showinfo("欢迎", "欢迎使用图片切分工具！\n\n第一步：请选择包含图片的【输入文件夹】。")
         in_dir = filedialog.askdirectory(title="选择输入图片文件夹")
         if not in_dir:
@@ -276,7 +301,6 @@ class ImageCutterApp:
             messagebox.showinfo("提示", f"保存路径已更新为：\n{self.output_path}")
 
     def setup_ui(self):
-        # 顶部菜单栏
         top_bar = ttk.Frame(self.root, padding="5")
         top_bar.pack(fill=tk.X)
 
@@ -286,16 +310,36 @@ class ImageCutterApp:
         self.status_label = ttk.Label(top_bar, text="准备就绪", foreground="gray")
         self.status_label.pack(side=tk.LEFT, padx=5)
 
-        # 主分割窗口
         main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main_paned.pack(fill=tk.BOTH, expand=True)
 
-        # 左侧控制面板
-        self.control_frame = ttk.Frame(main_paned, padding="10", width=320)
-        main_paned.add(self.control_frame, weight=0)
+        # --- 左侧控制面板 (带滚动条) ---
+        control_container = ttk.Frame(main_paned, width=340)
+        main_paned.add(control_container, weight=0)
+        
+        canvas = tk.Canvas(control_container, bg=self.root.cget("bg"), highlightthickness=0)
+        scrollbar = ttk.Scrollbar(control_container, orient="vertical", command=canvas.yview)
+        
+        self.scrollable_frame = ttk.Frame(canvas)
+        self.scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        
+        canvas_frame = canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.bind('<Configure>', lambda e: canvas.itemconfig(canvas_frame, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
-        # --- 主控制区 ---
-        self.main_controls_frame = ttk.Frame(self.control_frame)
+        self.control_frame = self.scrollable_frame
+
+        # --- 主控制区内容 ---
+        self.main_controls_frame = ttk.Frame(self.control_frame, padding="10")
         self.main_controls_frame.pack(fill=tk.X)
 
         ttk.Label(self.main_controls_frame, text="参数设置", font=("Arial", 14, "bold")).pack(pady=10)
@@ -318,10 +362,29 @@ class ImageCutterApp:
         self.param_container = ttk.Frame(self.main_controls_frame)
         self.param_container.pack(fill=tk.X, pady=10)
 
-        self.color_frame = ttk.LabelFrame(self.param_container, text="彩色模式参数 (HSV)", padding="5")
-        self.add_slider(self.color_frame, "hue_tol", "色相容差 (Hue)", 0, 90, 15)
-        self.add_slider(self.color_frame, "sat_min", "最小饱和度 (Sat)", 0, 255, 40)
-        self.add_slider(self.color_frame, "val_min", "最小亮度 (Val)", 0, 255, 40)
+        # --- 彩色模式 (RGBA) ---
+        self.color_frame = ttk.LabelFrame(self.param_container, text="彩色模式参数 (RGBA)", padding="5")
+        picker_frame = ttk.Frame(self.color_frame)
+        picker_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(picker_frame, text="🎨 从图中吸取颜色", command=self.start_color_picking).pack(side=tk.LEFT)
+        
+        self.color_invert_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(picker_frame, text="反转选择 (选中背景)", variable=self.color_invert_var, command=self.schedule_update).pack(side=tk.LEFT, padx=10)
+
+        self.color_picker_tolerance_label = ttk.Label(picker_frame, text="容差: 20")
+        self.color_picker_tolerance_label.pack(side=tk.LEFT, padx=10)
+        self.color_picker_tolerance = tk.IntVar(value=20)
+        tolerance_slider = ttk.Scale(picker_frame, from_=0, to=100, variable=self.color_picker_tolerance, orient=tk.HORIZONTAL, command=lambda v: self.color_picker_tolerance_label.config(text=f"容差: {int(float(v))}"))
+        tolerance_slider.pack(fill=tk.X, expand=True)
+        
+        slider_grid = ttk.Frame(self.color_frame)
+        slider_grid.pack(fill=tk.X)
+        slider_grid.columnconfigure(2, weight=1)
+        slider_grid.columnconfigure(4, weight=1)
+        self.add_channel_sliders(slider_grid, "R", "color_r", 0, 0, 255)
+        self.add_channel_sliders(slider_grid, "G", "color_g", 1, 0, 255)
+        self.add_channel_sliders(slider_grid, "B", "color_b", 2, 0, 255)
+        self.add_channel_sliders(slider_grid, "A", "color_a", 3, 0, 255) # Alpha 默认全选
 
         self.gray_frame = ttk.LabelFrame(self.param_container, text="黑白模式参数", padding="5")
         self.add_slider(self.gray_frame, "gray_thresh", "灰度阈值 (0=Auto)", 0, 255, 0)
@@ -338,10 +401,24 @@ class ImageCutterApp:
         self.add_slider(self.yellow_frame, "yellow_v_min", "最小亮度", 0, 255, 40)
 
         self.rembg_frame = ttk.LabelFrame(self.param_container, text="Rembg AI 模式", padding="5")
+        
+        model_select_frame = ttk.Frame(self.rembg_frame)
+        model_select_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(model_select_frame, text="模型:").pack(side=tk.LEFT)
+        self.rembg_model_var = tk.StringVar(value="u2net")
+        model_combo = ttk.Combobox(model_select_frame, textvariable=self.rembg_model_var, state="readonly", width=15)
+        model_combo['values'] = ('u2net', 'u2netp', 'u2net_human_seg', 'isnet-general-use', 'isnet-anime')
+        model_combo.pack(side=tk.LEFT, padx=5)
+        model_combo.bind("<<ComboboxSelected>>", lambda e: self.schedule_update())
+
         self.rembg_alpha_matting_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.rembg_frame, text="启用 Alpha Matting (边缘优化)", 
                         variable=self.rembg_alpha_matting_var, 
                         command=self.schedule_update).pack(anchor=tk.W, pady=5)
+        
+        self.add_slider(self.rembg_frame, "rembg_shift_x", "位置微调 X", -50, 50, 0)
+        self.add_slider(self.rembg_frame, "rembg_shift_y", "位置微调 Y", -50, 50, 0)
+        self.add_slider(self.rembg_frame, "rembg_mask_thresh", "蒙版显示阈值", 1, 255, 127)
         self.add_slider(self.rembg_frame, "rembg_fg_thresh", "前景阈值", 0, 255, 240)
         self.add_slider(self.rembg_frame, "rembg_bg_thresh", "背景阈值", 0, 255, 10)
         self.add_slider(self.rembg_frame, "rembg_erode", "腐蚀大小", 0, 40, 10)
@@ -354,6 +431,10 @@ class ImageCutterApp:
 
         action_frame = ttk.Frame(self.main_controls_frame)
         action_frame.pack(fill=tk.X, pady=10)
+        
+        self.apply_mask_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(action_frame, text="裁剪时应用蒙版去背", variable=self.apply_mask_var).pack(anchor=tk.W, pady=(0, 5))
+        
         self.edit_mask_button = ttk.Button(action_frame, text="✏️ 编辑蒙版 (E)", command=self.toggle_mask_editing)
         self.edit_mask_button.pack(fill=tk.X, pady=(0, 5))
         ttk.Button(action_frame, text="✂️ 执行拆分并保存 (S)", command=self.save_crops, style="Accent.TButton").pack(fill=tk.X)
@@ -366,7 +447,7 @@ class ImageCutterApp:
         self.info_label = ttk.Label(self.main_controls_frame, text="", foreground="blue", wraplength=280)
         self.info_label.pack(pady=5)
 
-        self.edit_controls_frame = ttk.Frame(self.control_frame)
+        self.edit_controls_frame = ttk.Frame(self.control_frame, padding="10")
         ttk.Label(self.edit_controls_frame, text="蒙版编辑模式", font=("Arial", 14, "bold")).pack(pady=10)
         edit_mode_frame = ttk.Frame(self.edit_controls_frame)
         edit_mode_frame.pack(fill=tk.X, pady=5)
@@ -407,55 +488,86 @@ class ImageCutterApp:
 
     # --- 异步与防抖 ---
     def _processing_worker(self):
+        rembg_cache = {}
         while True:
             try:
-                params, image, manual_draw, manual_erase = self.processing_request_queue.get()
-                mask = self._calculate_mask(params, image, manual_draw, manual_erase)
-                self.processing_result_queue.put(mask)
+                params, raw_image, manual_draw, manual_erase, image_id = self.processing_request_queue.get()
+                
+                mode = params['mode']
+                base_mask = None
+                match_ratio = 0
+                
+                if mode == 'rembg':
+                    cache_key = (image_id, params.get("rembg_model"), params.get("rembg_alpha_matting"), params.get("rembg_fg_thresh"), params.get("rembg_bg_thresh"), params.get("rembg_erode"))
+                    if cache_key in rembg_cache:
+                        base_mask = rembg_cache[cache_key].copy()
+                    else:
+                        if len(raw_image.shape) == 2: bgr_image = cv2.cvtColor(raw_image, cv2.COLOR_GRAY2BGR)
+                        elif raw_image.shape[2] == 4: bgr_image = cv2.cvtColor(raw_image, cv2.COLOR_BGRA2BGR)
+                        else: bgr_image = raw_image
+                        base_mask = ImageProcessor.get_mask_rembg(bgr_image, model_name=params.get("rembg_model", "u2net"), alpha_matting=params.get("rembg_alpha_matting", False), am_fg_thresh=params.get("rembg_fg_thresh", 240), am_bg_thresh=params.get("rembg_bg_thresh", 10), am_erode=params.get("rembg_erode", 10))
+                        if len(rembg_cache) > 5: rembg_cache.clear()
+                        rembg_cache[cache_key] = base_mask.copy()
+                elif mode == 'color':
+                    base_mask, match_ratio = ImageProcessor.get_mask_rgba_range(
+                        raw_image, 
+                        params["color_r_min"], params["color_r_max"], 
+                        params["color_g_min"], params["color_g_max"], 
+                        params["color_b_min"], params["color_b_max"], 
+                        params["color_a_min"], params["color_a_max"],
+                        invert=params.get("color_invert", True)
+                    )
+                else:
+                    if len(raw_image.shape) == 2: bgr_image = cv2.cvtColor(raw_image, cv2.COLOR_GRAY2BGR)
+                    elif raw_image.shape[2] == 4: bgr_image = cv2.cvtColor(raw_image, cv2.COLOR_BGRA2BGR)
+                    else: bgr_image = raw_image
+                    if mode == 'gray':
+                        base_mask = ImageProcessor.get_mask_gray(bgr_image, params["gray_thresh"], params["bg_type"])
+                    elif mode == 'yellow':
+                        base_mask = ImageProcessor.get_mask_yellow(bgr_image, params["yellow_h_center"], params["yellow_h_tol"], params["yellow_s_min"], params["yellow_v_min"])
+
+                if base_mask is None:
+                    h, w = raw_image.shape[:2]
+                    base_mask = np.zeros((h, w), dtype=np.uint8)
+
+                final_mask = self._apply_post_processing(base_mask, params, manual_draw, manual_erase)
+                self.processing_result_queue.put((final_mask, match_ratio))
+
             except Exception as e:
                 print(f"后台处理错误: {e}")
 
-    def _check_result_queue(self):
-        try:
-            result_mask = self.processing_result_queue.get_nowait()
-            self.processed_mask = result_mask
-            self.is_processing = False
-            self.status_label.config(text=f"当前文件: {self.current_filename}")
-            self.update_display()
-        except queue.Empty:
-            pass
-        finally:
-            self.root.after(100, self._check_result_queue)
-
-    def _calculate_mask(self, params, image, manual_draw_layer, manual_erase_layer):
-        mode = params['mode']
-        mask = None
-        if mode == "color":
-            mask = ImageProcessor.get_mask_color(image, params["hue_tol"], params["sat_min"], params["val_min"])
-        elif mode == "yellow":
-            mask = ImageProcessor.get_mask_yellow(image, params["yellow_h_center"], params["yellow_h_tol"], params["yellow_s_min"], params["yellow_v_min"])
-        elif mode == "rembg":
-            mask = ImageProcessor.get_mask_rembg(
-                image,
-                alpha_matting=params.get("rembg_alpha_matting", False),
-                am_fg_thresh=params.get("rembg_fg_thresh", 240),
-                am_bg_thresh=params.get("rembg_bg_thresh", 10),
-                am_erode=params.get("rembg_erode", 10)
-            )
-        else:
-            mask = ImageProcessor.get_mask_gray(image, params["gray_thresh"], params["bg_type"])
+    def _apply_post_processing(self, mask, params, manual_draw_layer, manual_erase_layer):
+        if params['mode'] == "rembg":
+            sx, sy = params.get("rembg_shift_x", 0), params.get("rembg_shift_y", 0)
+            if sx != 0 or sy != 0:
+                mask = ImageProcessor.shift_mask(mask, sx, sy)
         
-        if mask is None:
-            h, w = image.shape[:2]
-            mask = np.zeros((h, w), dtype=np.uint8)
-
         mask = ImageProcessor.apply_morphology(mask, params["clean_kernel"], params["connect_kernel"], params["connect_iters"])
         
         if manual_draw_layer is not None:
             mask = cv2.bitwise_or(mask, manual_draw_layer)
         if manual_erase_layer is not None:
             mask = cv2.bitwise_and(mask, cv2.bitwise_not(manual_erase_layer))
+            
         return mask
+
+    def _check_result_queue(self):
+        try:
+            result_mask, match_ratio = self.processing_result_queue.get_nowait()
+            self.processed_mask = result_mask
+            self.is_processing = False
+            
+            # 更新状态栏信息
+            status_text = f"当前文件: {self.current_filename}"
+            if self.mode_var.get() == "color":
+                status_text += f" | 颜色匹配率: {match_ratio:.1%}"
+            self.status_label.config(text=status_text)
+            
+            self.update_display()
+        except queue.Empty:
+            pass
+        finally:
+            self.root.after(100, self._check_result_queue)
 
     def schedule_update(self):
         if self.debounce_job:
@@ -466,7 +578,9 @@ class ImageCutterApp:
         if self.current_image is None: return
         
         params = {'mode': self.mode_var.get(), 'bg_type': self.bg_type_var.get()}
+        params['rembg_model'] = self.rembg_model_var.get()
         params['rembg_alpha_matting'] = self.rembg_alpha_matting_var.get()
+        params['color_invert'] = self.color_invert_var.get()
         for name, var in self.sliders.items():
             params[name] = var.get()
 
@@ -476,7 +590,7 @@ class ImageCutterApp:
             except queue.Empty:
                 pass
         
-        request_data = (params, self.current_image.copy(), self.manual_draw_layer.copy(), self.manual_erase_layer.copy())
+        request_data = (params, self.raw_image.copy(), self.manual_draw_layer.copy(), self.manual_erase_layer.copy(), self.current_filename)
         self.processing_request_queue.put(request_data)
 
         if not self.is_processing:
@@ -517,6 +631,9 @@ class ImageCutterApp:
         self.size_slider.set(new_size)
 
     def start_paint(self, event):
+        if self.is_picking_color:
+            self.pick_color(event)
+            return
         if not self.is_editing_mask: return
         self.drawing = True
         self.paint(event)
@@ -603,6 +720,25 @@ class ImageCutterApp:
         slider.pack(fill=tk.X)
         self.sliders[name] = var
 
+    def add_channel_sliders(self, parent, label, name_prefix, row_idx, default_min, default_max):
+        ttk.Label(parent, text=f"{label}:").grid(row=row_idx, column=0, sticky='w')
+        
+        var_min = tk.IntVar(value=default_min)
+        lbl_min = ttk.Label(parent, text=str(default_min), width=4)
+        lbl_min.grid(row=row_idx, column=1)
+        slider_min = ttk.Scale(parent, from_=0, to=255, variable=var_min, orient=tk.HORIZONTAL, 
+                               command=lambda v, l=lbl_min: (l.config(text=str(int(float(v)))), self.schedule_update()))
+        slider_min.grid(row=row_idx, column=2, sticky='ew', padx=(0,5))
+        self.sliders[f"{name_prefix}_min"] = var_min
+
+        var_max = tk.IntVar(value=default_max)
+        lbl_max = ttk.Label(parent, text=str(default_max), width=4)
+        lbl_max.grid(row=row_idx, column=3)
+        slider_max = ttk.Scale(parent, from_=0, to=255, variable=var_max, orient=tk.HORIZONTAL,
+                               command=lambda v, l=lbl_max: (l.config(text=str(int(float(v)))), self.schedule_update()))
+        slider_max.grid(row=row_idx, column=4, sticky='ew', padx=(0,5))
+        self.sliders[f"{name_prefix}_max"] = var_max
+
     def load_image(self, index, force_auto_detect=False):
         if not self.files: return
         if self.is_editing_mask: self.toggle_mask_editing()
@@ -662,10 +798,11 @@ class ImageCutterApp:
             self.bg_type_var.set("white")
             self.sliders["gray_thresh"].set(0)
         else:
-            self.mode_var.set("color")
-            self.sliders["hue_tol"].set(15)
-            self.sliders["sat_min"].set(40)
-            self.sliders["val_min"].set(40)
+            self.mode_var.set("yellow") # Fallback to yellow for other colors
+            self.sliders["yellow_h_center"].set(30)
+            self.sliders["yellow_h_tol"].set(15)
+            self.sliders["yellow_s_min"].set(40)
+            self.sliders["yellow_v_min"].set(40)
         
         self.on_mode_change()
         self.is_auto_detecting = False
@@ -676,18 +813,21 @@ class ImageCutterApp:
         img_rgb = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
         final_vis = None
 
+        thresh_val = self.sliders.get("rembg_mask_thresh", tk.IntVar(value=127)).get()
+        _, display_mask = cv2.threshold(self.processed_mask, thresh_val, 255, cv2.THRESH_BINARY)
+
         if self.is_editing_mask:
             overlay = np.zeros_like(img_rgb)
-            overlay[self.processed_mask == 255] = [255, 0, 0]
+            overlay[display_mask == 255] = [255, 0, 0]
             final_vis = cv2.addWeighted(img_rgb, 0.4, overlay, 0.6, 0)
         else:
-            mask_3c = cv2.cvtColor(self.processed_mask, cv2.COLOR_GRAY2RGB)
+            mask_3c = cv2.cvtColor(display_mask, cv2.COLOR_GRAY2RGB)
             fg = cv2.bitwise_and(img_rgb, mask_3c)
             bg = cv2.bitwise_and(img_rgb, cv2.bitwise_not(mask_3c))
             bg = (bg * 0.3).astype(np.uint8)
             bg[:, :, 0] = np.clip(bg[:, :, 0] + 50, 0, 255)
             final_vis = cv2.add(fg, bg)
-            contours, _ = cv2.findContours(self.processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(display_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(final_vis, contours, -1, (0, 255, 0), 2)
             self.info_label.config(text=f"检测到 {len(contours)} 个对象")
 
@@ -727,10 +867,17 @@ class ImageCutterApp:
             b, g, r = cv2.split(bgr_image)
             original_a = np.full(self.raw_image.shape[:2], 255, dtype=np.uint8)
 
-        final_alpha = cv2.bitwise_and(original_a, self.processed_mask)
+        thresh_val = self.sliders.get("rembg_mask_thresh", tk.IntVar(value=127)).get()
+        _, save_mask = cv2.threshold(self.processed_mask, thresh_val, 255, cv2.THRESH_BINARY)
+        
+        if self.apply_mask_var.get():
+            final_alpha = cv2.bitwise_and(original_a, save_mask)
+        else:
+            final_alpha = original_a
+            
         final_full_image = cv2.merge([b, g, r, final_alpha])
 
-        contours, _ = cv2.findContours(self.processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(save_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         base_name = os.path.splitext(self.current_filename)[0]
         count = 0
 
@@ -749,6 +896,70 @@ class ImageCutterApp:
 
         self.info_label.config(text=f"已保存 {count} 个切片！")
         self.root.after(1000, self.next_image)
+
+    def start_color_picking(self):
+        if self.is_editing_mask:
+            messagebox.showwarning("提示", "请先完成蒙版编辑。")
+            return
+        self.is_picking_color = True
+        self.canvas.config(cursor="crosshair")
+        self.status_label.config(text="请在图片上点击以吸取颜色...")
+
+    def _get_bgra_from_raw(self, raw_img):
+        if len(raw_img.shape) == 2:
+            return cv2.cvtColor(raw_img, cv2.COLOR_GRAY2BGRA)
+        if raw_img.shape[2] == 3:
+            return cv2.cvtColor(raw_img, cv2.COLOR_BGR2BGRA)
+        return raw_img
+
+    def pick_color(self, event):
+        if self.raw_image is None: return
+
+        image_bgra = self._get_bgra_from_raw(self.raw_image)
+        h, w = image_bgra.shape[:2]
+
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        base_scale = min(canvas_w / w, canvas_h / h)
+        current_scale = base_scale * self.zoom_scale
+        new_w, new_h = int(w * current_scale), int(h * current_scale)
+        total_offset_x = (canvas_w - new_w) // 2 + self.pan_offset_x
+        total_offset_y = (canvas_h - new_h) // 2 + self.pan_offset_y
+        
+        img_x = int((event.x - total_offset_x) / current_scale)
+        img_y = int((event.y - total_offset_y) / current_scale)
+
+        if 0 <= img_x < w and 0 <= img_y < h:
+            # 区域采样：取 9x9 区域
+            x_start = max(0, img_x - 4)
+            x_end = min(w, img_x + 5)
+            y_start = max(0, img_y - 4)
+            y_end = min(h, img_y + 5)
+            
+            roi = image_bgra[y_start:y_end, x_start:x_end]
+            
+            # 计算区域内的最小值和最大值
+            min_vals = np.min(roi, axis=(0, 1))
+            max_vals = np.max(roi, axis=(0, 1))
+            
+            b_min, g_min, r_min, a_min = min_vals
+            b_max, g_max, r_max, a_max = max_vals
+            
+            tol = self.color_picker_tolerance.get()
+            
+            self.sliders["color_r_min"].set(max(0, int(r_min) - tol))
+            self.sliders["color_r_max"].set(min(255, int(r_max) + tol))
+            self.sliders["color_g_min"].set(max(0, int(g_min) - tol))
+            self.sliders["color_g_max"].set(min(255, int(g_max) + tol))
+            self.sliders["color_b_min"].set(max(0, int(b_min) - tol))
+            self.sliders["color_b_max"].set(min(255, int(b_max) + tol))
+            # Alpha 通道通常不需要太严格，除非用户明确想选半透明
+            self.sliders["color_a_min"].set(max(0, int(a_min) - tol))
+            self.sliders["color_a_max"].set(min(255, int(a_max) + tol))
+
+        self.is_picking_color = False
+        self.canvas.config(cursor="")
+        self.status_label.config(text=f"当前文件: {self.current_filename}")
+        self.schedule_update()
 
 
 if __name__ == "__main__":
