@@ -219,3 +219,15 @@ __marimo__/
 *.mkv
 *.wmv
 /app_config.json
+/models/.u2net/isnet-anime.onnx
+/models/isnet-anime.onnx
+/models/.u2net/isnet-general-use.onnx
+/models/isnet-general-use.onnx
+/models/.u2net/tmp827nf6qt
+/models/tmp827nf6qt
+/models/.u2net/u2net.onnx
+/models/u2net.onnx
+/models/.u2net/u2net_human_seg.onnx
+/models/u2net_human_seg.onnx
+/models/.u2net/u2netp.onnx
+/models/u2netp.onnx

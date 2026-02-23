@@ -1,0 +1,60 @@
+C:\Program Files\Python310\python3.dll
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\numpy.libs\libscipy_openblas64_-13e2df515630b4a41f92893938845698.dll
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\onnxruntime\capi\onnxruntime_pybind11_state.pyd
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\numpy\_core\_multiarray_umath.cp310-win_amd64.pyd
+C:\Program Files\Python310\python310.dll
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\numpy.libs\msvcp140-263139962577ecda4cd9469ca360a746.dll
+C:\Windows\System32\msvcp140.dll
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\numpy\linalg\_umath_linalg.cp310-win_amd64.pyd
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\psutil\_psutil_windows.pyd
+C:\Program Files\Python310\DLLs\_ctypes.pyd
+D:\Users\admin\PycharmProjects\ImageProcessorFactory\venv\Lib\site-packages\onnxruntime\capi\onnxruntime_providers_shared.dll
+C:\Program Files\Python310\vcruntime140_1.dll
+C:\Windows\System32\msvcp140_1.dll
+C:\Program Files\Python310\DLLs\_socket.pyd
+C:\Program Files\Python310\DLLs\libffi-7.dll
+C:\Program Files\Python310\vcruntime140.dll
+C:\Windows\System32\pdh.dll
+C:\Program Files\Python310\DLLs\select.pyd
+C:\Windows\System32\directxdatabasehelper.dll
+C:\Windows\System32\version.dll
+C:\Windows\System32\apphelp.dll
+C:\Windows\System32\DXCore.dll
+C:\Windows\System32\dbghelp.dll
+C:\Windows\System32\dxgi.dll
+C:\Windows\System32\IPHLPAPI.DLL
+C:\Windows\System32\umpdc.dll
+C:\Windows\System32\powrprof.dll
+C:\Windows\System32\wtsapi32.dll
+C:\Windows\System32\rsaenh.dll
+C:\Windows\System32\kernel.appcore.dll
+C:\Windows\System32\cryptbase.dll
+C:\Windows\System32\cryptsp.dll
+C:\Windows\System32\msasn1.dll
+C:\Windows\System32\cfgmgr32.dll
+C:\Windows\System32\devobj.dll
+C:\Windows\System32\crypt32.dll
+C:\Windows\System32\win32u.dll
+C:\Windows\System32\msvcp_win.dll
+C:\Windows\System32\gdi32full.dll
+C:\Windows\System32\bcryptprimitives.dll
+C:\Windows\System32\KernelBase.dll
+C:\Windows\System32\bcrypt.dll
+C:\Windows\System32\ucrtbase.dll
+C:\Windows\System32\wintrust.dll
+C:\Windows\System32\oleaut32.dll
+C:\Windows\System32\setupapi.dll
+C:\Windows\System32\ole32.dll
+C:\Windows\System32\imm32.dll
+C:\Windows\System32\combase.dll
+C:\Windows\System32\sechost.dll
+C:\Windows\System32\rpcrt4.dll
+C:\Windows\System32\gdi32.dll
+C:\Windows\System32\user32.dll
+C:\Windows\System32\kernel32.dll
+C:\Windows\System32\advapi32.dll
+C:\Windows\System32\psapi.dll
+C:\Windows\System32\ws2_32.dll
+C:\Windows\System32\msvcrt.dll
+C:\Windows\System32\shell32.dll
+C:\Windows\System32\ntdll.dll
