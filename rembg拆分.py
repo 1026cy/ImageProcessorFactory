@@ -5,21 +5,6 @@
 # @Software: PyCharm
 import os
 import sys
-
-# ==========================================
-# 环境配置 (Environment Setup)
-# ==========================================
-if getattr(sys, 'frozen', False):
-    base_path = os.path.dirname(sys.executable)
-else:
-    base_path = os.path.dirname(os.path.abspath(__file__))
-
-models_dir = os.path.join(base_path, "models")
-if not os.path.exists(models_dir):
-    os.makedirs(models_dir)
-
-os.environ["U2NET_HOME"] = models_dir
-
 import cv2
 import numpy as np
 import json
@@ -27,13 +12,43 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 from rembg import remove, new_session
+import onnxruntime as ort
 import threading
 import queue
+
+# ==========================================
+# 路径配置 (Path Config)
+# ==========================================
+if getattr(sys, 'frozen', False):
+    base_path = os.path.dirname(sys.executable)
+else:
+    base_path = os.path.dirname(os.path.abspath(__file__))
+
+# 项目本地模型目录
+local_models_dir = os.path.join(base_path, "models")
+if not os.path.exists(local_models_dir):
+    os.makedirs(local_models_dir)
+os.environ["REMBG_HOME"] = local_models_dir
+
+
 
 
 # ==========================================
 # 核心逻辑类 (Core Logic)
 # ==========================================
+class CustomSession:
+    """
+    自定义 Session，用于直接加载本地 ONNX 模型，绕过 rembg 的下载和校验逻辑。
+    """
+    def __init__(self, model_path):
+        self.model_name = os.path.splitext(os.path.basename(model_path))[0]
+        # 显式指定 providers，优先使用 CPU，避免部分环境 CUDA 报错
+        # 如果您有 GPU 环境，onnxruntime 会自动优先尝试 CUDAExecutionProvider
+        self.inner_session = ort.InferenceSession(
+            model_path, 
+            providers=ort.get_available_providers()
+        )
+
 class ImageProcessor:
     """
     负责图像处理的核心算法，与UI解耦。
@@ -43,12 +58,26 @@ class ImageProcessor:
     @classmethod
     def get_session(cls, model_name):
         if model_name not in cls._sessions:
-            print(f"正在加载模型: {model_name} ...")
+            print(f"正在请求模型: {model_name} ...")
+            
+            # 1. 检查项目本地目录
+            local_path = os.path.join(local_models_dir, f"{model_name}.onnx")
+
+            
+            target_path = None
+            
+            if os.path.exists(local_path):
+                print(f"✅ 在项目目录找到模型: {local_path}")
+                target_path = local_path
+            
             try:
+                # 只有在需要下载时，才强制指定下载目录到项目下的 models
+                # 这样下载后的文件就在项目里，方便打包
                 cls._sessions[model_name] = new_session(model_name)
             except Exception as e:
-                print(f"模型加载失败: {e}")
+                print(f"❌ 模型加载失败: {e}")
                 return None
+                
         return cls._sessions[model_name]
 
     @staticmethod
@@ -72,7 +101,6 @@ class ImageProcessor:
 
     @staticmethod
     def get_mask_rgba_range(raw_image, r_min, r_max, g_min, g_max, b_min, b_max, a_min, a_max, invert=True):
-        # 确保图像是4通道BGRA
         if len(raw_image.shape) == 2:
             image_bgra = cv2.cvtColor(raw_image, cv2.COLOR_GRAY2BGRA)
         elif raw_image.shape[2] == 3:
@@ -80,17 +108,12 @@ class ImageProcessor:
         else:
             image_bgra = raw_image
 
-        # OpenCV 使用 BGR 顺序
         lower_bound = np.array([b_min, g_min, r_min, a_min], dtype=np.uint8)
         upper_bound = np.array([b_max, g_max, r_max, a_max], dtype=np.uint8)
         
-        # 创建一个蒙版，其中在范围内的像素为白色（255）
         mask = cv2.inRange(image_bgra, lower_bound, upper_bound)
-        
-        # 统计匹配像素比例 (用于调试)
         match_ratio = np.count_nonzero(mask) / (mask.shape[0] * mask.shape[1])
         
-        # 如果 invert=True (默认)，则反转蒙版
         if invert:
             return cv2.bitwise_not(mask), match_ratio
         else:
