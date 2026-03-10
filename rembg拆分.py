@@ -210,6 +210,7 @@ class ImageCutterApp:
         self.input_path = ""
         self.output_path = ""
         self.files = []
+        self.picked_colors = []
         self.current_index = 0
         self.raw_image = None
         self.current_image = None
@@ -386,28 +387,24 @@ class ImageCutterApp:
         self.param_container.pack(fill=tk.X, pady=10)
 
         # --- 彩色模式 (RGBA) ---
-        self.color_frame = ttk.LabelFrame(self.param_container, text="彩色模式参数 (RGBA)", padding="5")
+        self.color_frame = ttk.LabelFrame(self.param_container, text="彩色模式参数 (多点吸色)", padding="5")
         picker_frame = ttk.Frame(self.color_frame)
         picker_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(picker_frame, text="🎨 从图中吸取颜色", command=self.start_color_picking).pack(side=tk.LEFT)
+        self.color_picker_button = ttk.Button(picker_frame, text="🎨 从图中吸取颜色", command=self.toggle_color_picking)
+        self.color_picker_button.pack(side=tk.LEFT)
         
         self.color_invert_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(picker_frame, text="反转选择 (选中背景)", variable=self.color_invert_var, command=self.schedule_update).pack(side=tk.LEFT, padx=10)
 
         self.color_picker_tolerance_label = ttk.Label(picker_frame, text="容差: 20")
-        self.color_picker_tolerance_label.pack(side=tk.LEFT, padx=10)
+        self.color_picker_tolerance_label.pack(side=tk.LEFT, padx=5)
         self.color_picker_tolerance = tk.IntVar(value=20)
         tolerance_slider = ttk.Scale(picker_frame, from_=0, to=100, variable=self.color_picker_tolerance, orient=tk.HORIZONTAL, command=lambda v: self.color_picker_tolerance_label.config(text=f"容差: {int(float(v))}"))
         tolerance_slider.pack(fill=tk.X, expand=True)
         
-        slider_grid = ttk.Frame(self.color_frame)
-        slider_grid.pack(fill=tk.X)
-        slider_grid.columnconfigure(2, weight=1)
-        slider_grid.columnconfigure(4, weight=1)
-        self.add_channel_sliders(slider_grid, "R", "color_r", 0, 0, 255)
-        self.add_channel_sliders(slider_grid, "G", "color_g", 1, 0, 255)
-        self.add_channel_sliders(slider_grid, "B", "color_b", 2, 0, 255)
-        self.add_channel_sliders(slider_grid, "A", "color_a", 3, 0, 255) # Alpha 默认全选
+        self.picked_colors_frame = ttk.Frame(self.color_frame)
+        self.picked_colors_frame.pack(fill=tk.X, pady=5)
+        self._update_picked_colors_ui()
 
         self.gray_frame = ttk.LabelFrame(self.param_container, text="黑白模式参数", padding="5")
         self.add_slider(self.gray_frame, "gray_thresh", "灰度阈值 (0=Auto)", 0, 255, 0)
@@ -532,14 +529,33 @@ class ImageCutterApp:
                         if len(rembg_cache) > 5: rembg_cache.clear()
                         rembg_cache[cache_key] = base_mask.copy()
                 elif mode == 'color':
-                    base_mask, match_ratio = ImageProcessor.get_mask_rgba_range(
-                        raw_image, 
-                        params["color_r_min"], params["color_r_max"], 
-                        params["color_g_min"], params["color_g_max"], 
-                        params["color_b_min"], params["color_b_max"], 
-                        params["color_a_min"], params["color_a_max"],
-                        invert=params.get("color_invert", True)
-                    )
+                    h, w = raw_image.shape[:2]
+                    combined_mask = np.zeros((h, w), dtype=np.uint8)
+                    
+                    picked_colors = params.get('picked_colors', [])
+                    if not picked_colors:
+                        base_mask = np.zeros((h, w), dtype=np.uint8)
+                        match_ratio = 0
+                    else:
+                        for color in picked_colors:
+                            r_min, r_max = color['r']
+                            g_min, g_max = color['g']
+                            b_min, b_max = color['b']
+                            a_min, a_max = color['a']
+                            
+                            mask, _ = ImageProcessor.get_mask_rgba_range(
+                                raw_image, 
+                                r_min, r_max, g_min, g_max, b_min, b_max, a_min, a_max,
+                                invert=False
+                            )
+                            combined_mask = cv2.bitwise_or(combined_mask, mask)
+                        
+                        match_ratio = np.count_nonzero(combined_mask) / (h * w)
+                        
+                        if params.get("color_invert", True):
+                            base_mask = cv2.bitwise_not(combined_mask)
+                        else:
+                            base_mask = combined_mask
                 else:
                     if len(raw_image.shape) == 2: bgr_image = cv2.cvtColor(raw_image, cv2.COLOR_GRAY2BGR)
                     elif raw_image.shape[2] == 4: bgr_image = cv2.cvtColor(raw_image, cv2.COLOR_BGRA2BGR)
@@ -606,6 +622,13 @@ class ImageCutterApp:
         params['color_invert'] = self.color_invert_var.get()
         for name, var in self.sliders.items():
             params[name] = var.get()
+
+        if params['mode'] == 'color':
+            params['picked_colors'] = [
+                {
+                    "r": color["r"], "g": color["g"], "b": color["b"], "a": color["a"]
+                } for color in self.picked_colors if color["enabled"].get()
+            ]
 
         if not self.processing_request_queue.empty():
             try:
@@ -799,6 +822,9 @@ class ImageCutterApp:
         if should_reset_manual:
             self.manual_draw_layer = np.zeros((h, w), dtype=np.uint8)
             self.manual_erase_layer = np.zeros((h, w), dtype=np.uint8)
+        
+        self.picked_colors = []
+        self._update_picked_colors_ui()
 
         if force_auto_detect or self.auto_apply_var.get():
             self.auto_detect_params()
@@ -821,7 +847,7 @@ class ImageCutterApp:
             self.bg_type_var.set("white")
             self.sliders["gray_thresh"].set(0)
         else:
-            self.mode_var.set("yellow") # Fallback to yellow for other colors
+            self.mode_var.set("yellow") # Fallback to other colors
             self.sliders["yellow_h_center"].set(30)
             self.sliders["yellow_h_tol"].set(15)
             self.sliders["yellow_s_min"].set(40)
@@ -920,13 +946,21 @@ class ImageCutterApp:
         self.info_label.config(text=f"已保存 {count} 个切片！")
         self.root.after(1000, self.next_image)
 
-    def start_color_picking(self):
+    def toggle_color_picking(self):
         if self.is_editing_mask:
             messagebox.showwarning("提示", "请先完成蒙版编辑。")
             return
-        self.is_picking_color = True
-        self.canvas.config(cursor="crosshair")
-        self.status_label.config(text="请在图片上点击以吸取颜色...")
+        
+        self.is_picking_color = not self.is_picking_color
+        
+        if self.is_picking_color:
+            self.canvas.config(cursor="crosshair")
+            self.status_label.config(text="吸色模式: 在图上点击添加颜色。再点一次按钮退出。")
+            self.color_picker_button.config(text="✅ 完成吸色")
+        else:
+            self.canvas.config(cursor="")
+            self.status_label.config(text=f"当前文件: {self.current_filename}")
+            self.color_picker_button.config(text="🎨 从图中吸取颜色")
 
     def _get_bgra_from_raw(self, raw_img):
         if len(raw_img.shape) == 2:
@@ -952,7 +986,6 @@ class ImageCutterApp:
         img_y = int((event.y - total_offset_y) / current_scale)
 
         if 0 <= img_x < w and 0 <= img_y < h:
-            # 区域采样：取 9x9 区域
             x_start = max(0, img_x - 4)
             x_end = min(w, img_x + 5)
             y_start = max(0, img_y - 4)
@@ -960,7 +993,6 @@ class ImageCutterApp:
             
             roi = image_bgra[y_start:y_end, x_start:x_end]
             
-            # 计算区域内的最小值和最大值
             min_vals = np.min(roi, axis=(0, 1))
             max_vals = np.max(roi, axis=(0, 1))
             
@@ -969,20 +1001,57 @@ class ImageCutterApp:
             
             tol = self.color_picker_tolerance.get()
             
-            self.sliders["color_r_min"].set(max(0, int(r_min) - tol))
-            self.sliders["color_r_max"].set(min(255, int(r_max) + tol))
-            self.sliders["color_g_min"].set(max(0, int(g_min) - tol))
-            self.sliders["color_g_max"].set(min(255, int(g_max) + tol))
-            self.sliders["color_b_min"].set(max(0, int(b_min) - tol))
-            self.sliders["color_b_max"].set(min(255, int(b_max) + tol))
-            # Alpha 通道通常不需要太严格，除非用户明确想选半透明
-            self.sliders["color_a_min"].set(max(0, int(a_min) - tol))
-            self.sliders["color_a_max"].set(min(255, int(a_max) + tol))
+            color_info = {
+                "r": (max(0, int(r_min) - tol), min(255, int(r_max) + tol)),
+                "g": (max(0, int(g_min) - tol), min(255, int(g_max) + tol)),
+                "b": (max(0, int(b_min) - tol), min(255, int(b_max) + tol)),
+                "a": (max(0, int(a_min) - tol), min(255, int(a_max) + tol)),
+                "enabled": tk.BooleanVar(value=True)
+            }
+            self.picked_colors.append(color_info)
+            self._update_picked_colors_ui()
 
-        self.is_picking_color = False
-        self.canvas.config(cursor="")
-        self.status_label.config(text=f"当前文件: {self.current_filename}")
         self.schedule_update()
+
+    def _update_picked_colors_ui(self):
+        for widget in self.picked_colors_frame.winfo_children():
+            widget.destroy()
+
+        if not self.picked_colors:
+            ttk.Label(self.picked_colors_frame, text="请点击吸色按钮在图上添加颜色").pack()
+            return
+
+        for i, color_info in enumerate(self.picked_colors):
+            color_frame = ttk.Frame(self.picked_colors_frame)
+            color_frame.pack(fill=tk.X, pady=2)
+            
+            var = color_info["enabled"]
+            cb = ttk.Checkbutton(color_frame, variable=var, command=self.schedule_update)
+            cb.pack(side=tk.LEFT)
+
+            r_min, _ = color_info["r"]
+            g_min, _ = color_info["g"]
+            b_min, _ = color_info["b"]
+            
+            try:
+                hex_color = f"#{b_min:02x}{g_min:02x}{r_min:02x}"
+                color_swatch = tk.Canvas(color_frame, width=20, height=20, bg=hex_color, highlightthickness=0)
+            except tk.TclError:
+                color_swatch = tk.Canvas(color_frame, width=20, height=20, bg="white", highlightthickness=0)
+
+            color_swatch.pack(side=tk.LEFT, padx=5)
+
+            label_text = f"R:[{color_info['r'][0]}-{color_info['r'][1]}], G:[{color_info['g'][0]}-{color_info['g'][1]}], B:[{color_info['b'][0]}-{color_info['b'][1]}]"
+            ttk.Label(color_frame, text=label_text, anchor="w").pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+            remove_button = ttk.Button(color_frame, text="X", width=3, command=lambda idx=i: self._remove_picked_color(idx))
+            remove_button.pack(side=tk.RIGHT)
+
+    def _remove_picked_color(self, index):
+        if 0 <= index < len(self.picked_colors):
+            self.picked_colors.pop(index)
+            self._update_picked_colors_ui()
+            self.schedule_update()
 
 
 if __name__ == "__main__":

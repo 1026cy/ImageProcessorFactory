@@ -60,10 +60,11 @@ class VideoProcessor:
                 frame_name = f"frame_{count:06d}.jpg"
                 save_path = os.path.join(output_dir, frame_name)
                 try:
+                    print(save_path)
                     cv2.imwrite(save_path, frame)
                     saved_count += 1
-                    if saved_count % 10 == 0 or saved_count == 1:
-                        log_callback(f"已保存: {frame_name} (进度: {count}/{total_frames})")
+                    # if saved_count % 10 == 0 or saved_count == 1:
+                    log_callback(f"已保存: {frame_name} (进度: {count}/{total_frames})")
                 except Exception as e:
                     log_callback(f"保存失败: {frame_name} - {e}")
 
