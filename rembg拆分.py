@@ -386,7 +386,7 @@ class ImageCutterApp:
         self.param_container = ttk.Frame(self.main_controls_frame)
         self.param_container.pack(fill=tk.X, pady=10)
 
-        # --- 彩色模式 (RGBA) ---
+        # --- 彩色模式 (多点吸色) ---
         self.color_frame = ttk.LabelFrame(self.param_container, text="彩色模式参数 (多点吸色)", padding="5")
         picker_frame = ttk.Frame(self.color_frame)
         picker_frame.pack(fill=tk.X, pady=5)
@@ -765,25 +765,6 @@ class ImageCutterApp:
         slider = ttk.Scale(frame, from_=min_val, to=max_val, variable=var, orient=tk.HORIZONTAL, command=on_change)
         slider.pack(fill=tk.X)
         self.sliders[name] = var
-
-    def add_channel_sliders(self, parent, label, name_prefix, row_idx, default_min, default_max):
-        ttk.Label(parent, text=f"{label}:").grid(row=row_idx, column=0, sticky='w')
-        
-        var_min = tk.IntVar(value=default_min)
-        lbl_min = ttk.Label(parent, text=str(default_min), width=4)
-        lbl_min.grid(row=row_idx, column=1)
-        slider_min = ttk.Scale(parent, from_=0, to=255, variable=var_min, orient=tk.HORIZONTAL, 
-                               command=lambda v, l=lbl_min: (l.config(text=str(int(float(v)))), self.schedule_update()))
-        slider_min.grid(row=row_idx, column=2, sticky='ew', padx=(0,5))
-        self.sliders[f"{name_prefix}_min"] = var_min
-
-        var_max = tk.IntVar(value=default_max)
-        lbl_max = ttk.Label(parent, text=str(default_max), width=4)
-        lbl_max.grid(row=row_idx, column=3)
-        slider_max = ttk.Scale(parent, from_=0, to=255, variable=var_max, orient=tk.HORIZONTAL,
-                               command=lambda v, l=lbl_max: (l.config(text=str(int(float(v)))), self.schedule_update()))
-        slider_max.grid(row=row_idx, column=4, sticky='ew', padx=(0,5))
-        self.sliders[f"{name_prefix}_max"] = var_max
 
     def load_image(self, index, force_auto_detect=False):
         if not self.files: return
